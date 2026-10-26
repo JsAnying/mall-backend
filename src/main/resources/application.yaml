@@ -1,0 +1,21 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: aispingboot
+  datasource:
+    url: ${DB_URL:jdbc:mysql://localhost:3306/shiguang_market_dev?useUnicode=true&characterEncoding=UTF-8&connectionTimeZone=UTC}
+    username: ${DB_USERNAME:root}
+    password: ${DB_PASSWORD:2007111}
+  sql:
+    init:
+      # MySQL 建表脚本需手动执行，应用不会自动更改已有数据库。
+      mode: never
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    default-statement-timeout: 30
+  global-config:
+    banner: false

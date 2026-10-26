@@ -1,0 +1,278 @@
+# 拾光闲置 · 开发建议与修错记录
+
+创建日期：2026-10-22（北京时间）。适用工程：后端 `E:\shiguang-server\market`、前端 `E:\shop`。
+
+当前状态（2026-10-25）：Java 17、Spring Boot 3.5.16、MyBatis-Plus 3.5.17，实际根包 `com.zhf.mall`（用户在迁移后自行修改），只实现注册；响应体只保留 `code`、`msg`、`data`，公共响应类位于 common。实体映射到 `user` 表，旧 users 表未自动迁移。Spring Security Web 鉴权仍未启用，仅保留独立 BCrypt 密码哈希。本日已通过运行中应用确认真实 MySQL 连接、表结构及 24 个注册 HTTP 场景，详见最新验收记录。旧包名、旧表名和旧版本说明保留为历史，当前实现以实际源码和最新记录为准。
+
+本文是持续维护的学习文档。以后每次修错，在保留历史记录的基础上追加“现象 → 原因 → 解决方法 → 验证 → 建议”；同类经验集中维护，不把未完成的工作写成已经实现。当前协作约定在前端 `E:/shop/AGENTS.md`；后端 AGENTS.md 已由用户删除，不自动恢复。
+
+接口契约以 [backend-api.md](../../../shop/docs/backend-api.md) 为准；当前注册数据库结构以 [01-user-schema.sql](../sql/01-user-schema.sql) 为准，旧市场 15 表脚本保留作参考。本文中的测试结果仅代表注明的验证范围。
+
+## 一、先掌握每一层的职责
+
+| 位置 | 职责 | 注册接口中的例子 |
+| --- | --- | --- |
+| Controller | 接收 HTTP 请求、触发校验、包装成功响应 | `Result.success(authService.register(request))` |
+| UserRegisterCommandDTO | 表达客户端能提交什么 | 只有 `username`、`password`，不接受客户端指定用户 ID |
+| Service | 校验业务规则、控制流程和事务、构造实体 | 查重、生成 BCrypt 哈希、生成昵称、插入并返回资料 |
+| User | 对应数据库字段 | `Long id`、`passwordHash`、`createdAt` 等 |
+| UserMapper / BaseMapper | 执行 SQL、映射结果、回填主键 | LambdaQueryWrapper、`selectOne()`、`insert()` |
+| UserRegisterResponseDTO | 表达允许返回给客户端的内容 | 字符串 `id` 和 `username`，没有密码 |
+| 异常处理 | 将失败转为 HTTP 状态和统一三字段 JSON | 400/409/500/503，错误响应仍保留 data: null |
+
+不要因为类名都带“用户”，就把请求参数、数据库实体和响应对象合并使用。数据库字段和可公开字段会逐渐不同。
+
+## 二、2026-10-22：修复新用户注册接口
+
+### 1. 修复前的实际问题和对应处理
+
+本次基于 2026-10-22 的最新代码检查。此前发现的 XML 目录、`user`/`users` 表名、`intsert` 拼写及部分 SQL 已被用户改正，未将这些重复计为本次尚存问题。
+
+| 问题 | 为什么会出错 | 本次解决方法 | 以后如何避免 |
+| --- | --- | --- | --- |
+| 导入 `jdk.internal.net.http.common.Utils` | 这是 JDK 内部包，不属于可直接使用的业务 API，实际导致编译失败 | 删除无用内部包导入 | IDE 自动导包后核对包名，不选 `jdk.internal.*` |
+| 使用 `passwordEncoder`，却没有定义或注入 | 写出方法调用不等于容器已经存在该依赖 | 配置 BCrypt `PasswordEncoder` Bean，通过构造器注入 Service | 对每个依赖确认“定义在哪里、由谁创建、如何注入” |
+| 给 `user` 赋值后，实际调用 `insert(new User())` | 插入了另一个空对象；必填字段为空，主键也不会回填到原对象 | 调用 `insert(user)`，检查影响行数和 `user.id` | 沿着变量检查“赋值、传参、回填、返回”是否为同一个对象 |
+| 未区分插入行数与主键 | Mapper 的 `int` 是影响行数；通常的 `1` 不是用户 ID | 保留 `useGeneratedKeys`，从 `user.getId()` 返回字符串 ID | 将行数变量命名为 `rows`，主键变量命名为 `id` |
+| `username` 为空时先执行 `trim()` | 请求缺字段会导致空指针 | 空值安全处理；请求对象和 Service 均执行必要校验 | 先校验空值，再做字符串操作 |
+| 密码校验函数始终返回 `null` | 按原约定，`null` 表示通过，因此所有密码都被放行 | 补齐长度 6～64 和 UTF-8 不超过 72 字节的校验 | 空实现必须有边界测试，不能仅凭方法名判断它已工作 |
+| Controller 有 `@Valid`，请求字段没有约束 | `@Valid` 只触发已有规则，不自动生成业务规则 | 给 DTO 添加实际约束，并保留 Service 校验 | 修改规则时同步检查 HTTP 与直接 Service 调用 |
+| 用户名已存在时只打印提示 | `println` 不会终止流程，后续仍会插入 | 立即抛业务异常；HTTP 返回 409/USERNAME_EXISTS | 每个失败分支都明确退出正常流程 |
+| 参数失败时返回 `null` | Controller 会把它包装成成功，前端可能误判注册完成 | 参数错误抛业务异常，返回 HTTP 400/VALIDATION_ERROR | 不使用 `null` 同时表示“失败”和“成功但无内容” |
+| 只依靠注册前查重 | 并发请求可以同时查到不存在 | 保留数据库用户名唯一约束，将该约束冲突转换为 409 | 查询用于友好提示，数据库约束负责最终一致性 |
+| 打印整个 RegisterRequest | Lombok `@Data` 的 `toString()` 包含明文密码 | 移除请求对象日志；密码排除 `toString()` 和 JSON 输出 | 日志只记录必要的非敏感结果，不打印密码、哈希或 Token |
+| 仅引入 Spring Security 依赖，没有明确配置 | 默认保护会影响匿名注册 POST | 添加最小无状态安全配置，仅放行注册；返回 JSON 401/403 | 每个接口都明确是否匿名；不要为调通而放行所有地址 |
+| 使用数据库 `NOW()` 写入时间 | `DATETIME` 本身没有时区；`NOW()` 取决于会话时区 | 在 Service 以 UTC 生成时间，并作为 SQL 参数写入 | 在存储和返回边界明确时区，不把 LocalDateTime 当作带时区时间 |
+| MySQL 驱动重复声明四次 | Maven 对重复依赖发出警告，增加维护混乱 | 只保留一份驱动依赖 | 新增依赖前搜索 `artifactId`，检查 scope 和版本管理 |
+
+此外增加严格字符串反序列化：JSON 中的用户名和密码必须为字符串，不能将数字、布尔值静默转换后当作合法凭据。
+
+### 2. 正确的注册流程
+
+```text
+POST /api/auth/register
+→ 解析 JSON，用户名去除首尾空白，密码保持原样
+→ 校验用户名格式、密码长度及 UTF-8 字节数
+→ 在 users 表中查询 username 是否存在
+→ BCrypt 生成密码哈希，默认昵称设为用户名
+→ 构造一个 User，并设置 UTC 创建/更新时间
+→ 插入该 User，数据库生成主键并回填
+→ 检查写入结果，返回字符串 ID 和用户名
+```
+
+核心区别：
+
+```java
+User user = new User();
+// 填充用户名、哈希、昵称和 UTC 时间后：
+int rows = authMapper.insert(user); // 影响行数
+Long id = user.getId();            // 数据库回填的主键
+```
+
+注册是一个事务。出现业务异常、数据库异常或主键回填异常时，不返回“成功”。注册后前端进入登录页，本次不签发 Token。
+
+### 3. 具体修改位置
+
+| 文件 | 作用 |
+| --- | --- |
+| `src/main/java/com/shiguang/market/service/Impl/AuthServiceImpl.java` | 注册流程、BCrypt、UTC 时间、唯一键冲突、真实 ID |
+| `src/main/java/com/shiguang/market/pojo/RegisterRequest.java` | 请求校验、用户名标准化、密码输出保护 |
+| `src/main/java/com/shiguang/market/until/ValidatorUtils.java` | 直接 Service 调用的空值、长度、字节数校验 |
+| `src/main/java/com/shiguang/market/controller/AuthController.java` | 构造器注入、去除密码日志、返回成功包装 |
+| `src/main/resources/mapper/AuthMapper.xml` | 参数化插入、主键回填、明确查询字段 |
+| `src/main/java/com/shiguang/market/config/SecurityConfig.java` | 注册匿名访问、PasswordEncoder、其他地址继续受保护 |
+| `src/main/java/com/shiguang/market/config/JsonConfig.java` | 禁止数字/布尔值静默转换为 JSON 字符串 |
+| `src/main/java/com/shiguang/market/exception/` | 业务错误、MVC 错误、数据库不可用和内部错误的统一响应 |
+| `src/main/java/com/shiguang/market/web/` | 请求追踪编号及安全过滤器的 JSON 错误输出 |
+| `pom.xml` | 清理重复驱动；H2 仅作为测试依赖 |
+
+错误响应包含 `data: null`、细分 `errorCode` 和服务器生成的 `traceId`；`X-Trace-Id` 响应头与错误体保持一致。数据库连接/资源不可用等故障返回 503，SQL 编写错误等内部问题返回 500，不向客户端回传 SQL 或堆栈。
+
+### 4. 验证结果与明确边界
+
+2026-10-22 在项目目录执行：
+
+```powershell
+mvn.cmd -o test
+```
+
+结果：30 项测试，0 失败、0 错误、0 跳过，BUILD SUCCESS。
+
+| 测试类别 | 已验证内容 |
+| --- | --- |
+| 完整 Spring/MVC/MyBatis 流程 | 匿名注册可进入 Controller，真实执行 Mapper XML 和 H2 SQL |
+| 数据持久化 | 密码保存为 BCrypt；昵称有值；主键回填；第二个用户返回不同 ID |
+| 标准化 | 用户名首尾空白移除；密码首尾空格完整保留 |
+| 校验边界 | 缺字段/null/空值、用户名非法及长度边界、密码长度边界、UTF-8 的 72/75 字节边界 |
+| 请求格式 | 畸形或空 JSON、字段类型错误、错误 Content-Type |
+| 重复注册 | 包含大小写变化和首尾空白的重复用户名返回 409，不修改原密码 |
+| 并发冲突 | 用屏障确保两个请求都查到不存在，再通过真实 H2 唯一约束验证仅一个成功，另一个报告 409 |
+| 失败隔离 | 内部错误 500、数据库资源故障 503；响应不包含测试中的内部敏感信息 |
+| 日志与 JSON | 请求密码和实体哈希不出现在对象 toString/JSON 输出中 |
+| 安全与响应 | 其他地址仍受保护；401 为 JSON；错误 body code 等于 HTTP 状态，data 保留 null |
+| 启动 | test profile 下 Spring 上下文正常加载 |
+
+测试数据源是 H2 MySQL 模式的内存数据库，并非真实 MySQL。测试清理前检查数据库产品名必须为 H2；没有执行现有开发库的清理或建表。
+
+当前执行进程未配置开发数据库凭据，**尚未验证真实 MySQL 的连接、现有表结构、排序规则及前端浏览器联调**。H2 的忽略大小写设置用于模拟账号规则，不能替代对 MySQL `uk_users_username` 和 `utf8mb4_0900_ai_ci` 的实际核对。生产数据库仍使用原 MySQL 配置和原建表脚本。
+
+本次测试中还发现：只在 DTO setter 内 trim，不足以保证当前 JSON 构造路径在校验前标准化。已改为显式 JSON 构造器调用标准化逻辑，并以带空格用户名的 HTTP 测试防止回归。这说明助手新增的代码也需要通过测试验证。
+
+### 5. 你接下来如何用自己的 MySQL 验收
+
+1. 按 `E:\shop\docs\backend-setup.md` 核对数据库、账号和表结构；数据库已有数据时不要重新执行整套初始化脚本。
+2. 在启动应用的终端或 IDE Run Configuration 中配置 `DB_USERNAME`、`DB_PASSWORD`。不要把密码写进 Git、本文档或截图。
+3. 在 `E:\shiguang-server\market` 运行 `mvn.cmd spring-boot:run`，不要启用测试 profile 代替开发数据库。
+4. 使用接口工具发送下面的请求。示例密码只是演示，不用于真实账号：
+
+```http
+POST http://localhost:8080/api/auth/register
+Content-Type: application/json
+
+{"username":"your_unique_test_user","password":"Example123!"}
+```
+
+预期首次返回 HTTP 200，`data.id` 为数据库实际 ID 的字符串。再次提交相同用户名，或变更大小写后提交，预期 HTTP 409/USERNAME_EXISTS。
+
+5. 在数据库中只查看测试账号对应记录，确认 `password_hash` 为 BCrypt 格式、昵称有值、时间按 UTC 保存；不要把密码哈希复制到公共日志。
+6. 浏览器前端已通过 `/api` 代理请求注册接口；注册后进入登录页，但登录接口本次尚未实现。
+
+### 6. 本轮开发范围
+
+- 已完成：注册接口及其校验、持久化、冲突处理、最小安全配置、统一错误格式和自动化验证。
+- 待做：登录签发/校验 JWT、`users/me`、logout 撤销、限流和后续商品业务。
+- 当前只有注册 POST 被匿名放行；尚未配置 JWT 认证，因此其他业务接口暂时不能用 Token 访问。登录开发时需一并配置 Token 签发和校验。
+- 当前按无 Cookie 的无状态 API 配置 CSRF 策略；以后若引入 Cookie 会话登录，应重新设计该策略。
+
+## 三、以后开发的建议
+
+1. **先写接口输入、输出和失败场景，再写实现。** 对照契约列出“成功、空值、非法值、重复、无权限、数据库失败”，不要只写成功分支。
+2. **每完成一层就验证一层，最后一定验证整条链路。** Java 编译通过不代表 SQL 能执行；SQL 能执行不代表 HTTP 状态、JSON 或安全配置正确。
+3. **把影响行数、主键和业务返回值分开命名。** `rows`、`id`、`RegisterInfo` 各自代表不同信息，避免复用一个 `int`。
+4. **密码规则同时考虑字符长度和字节长度。** 不 trim 密码；BCrypt 保存哈希，登录用 `matches()`，不要直接比较新生成的哈希字符串。
+5. **数据库约束是并发条件下的底线。** 查重、版本校验等预查询只提供友好提示，最终还要靠唯一键或带条件的写入，并正确处理失败。
+6. **错误必须改变控制流。** 打印提示不会中止执行；失败不能返回 `null` 后继续包装为成功。返回给用户的提示与内部故障详情应分开处理。
+7. **保留边界测试，避免同一个错误反复出现。** 本次尤其保留用户名 trim、缺字段、72 字节密码、行数与主键、并发重复注册这些回归点。
+8. **校验覆盖两条入口，但规则只维护一份。** DTO 的约束注解保护 HTTP 入口，Service 通过同一个 Bean Validation Validator 执行这些约束，避免手写工具类与注解规则逐渐不一致。
+9. **使用构造器注入并核对自动导包。** 依赖显式可见，便于测试；不要导入 JDK 内部类；Boot 4 当前默认使用 Jackson 3 的 `tools.jackson` 数据绑定包。
+10. **写清楚验证边界。** “H2 测试通过”“真实 MySQL 通过”“浏览器联调通过”是三个不同结论，不能混写；未完成的工作要保留在记录中。
+
+推荐继续顺序：真实 MySQL 注册验收 → 登录及 JWT → 当前用户资料/退出 → 分类和商品列表 → 上传和发布 → 订单事务。
+
+## 四、后续修错记录模板
+
+后续在本节下按日期追加，保留本轮历史。相同问题复发时引用已有经验，并记录为什么之前的防护未覆盖。
+
+```markdown
+### YYYY-MM-DD：问题名称
+
+- 现象及触发条件：
+- 根因与证据：
+- 修改文件和解决方法：
+- 验证命令与实际结果：
+- 未验证事项/剩余限制：
+- 防止复发的开发建议：
+```
+
+### 2026-10-24：按当前开发阶段暂时注释 Spring Security
+
+- **需求与范围**：用户暂时不需要 Spring Security，要求先注释相关内容。这是开发范围调整，不将其记为用户的编码错误。
+- **需要同步处理的原因**：仅注释自定义 `SecurityConfig` 而继续保留安全 starter，可能仍启用默认请求保护；直接停用整个配置又会导致注册 Service 缺少 `PasswordEncoder` Bean。因此同时处理依赖、配置和密码工具的创建位置。
+- **修改位置与方法**：
+  - `pom.xml`：以 XML 注释保留两个安全/OAuth2 starter 和两个对应测试依赖；增加独立的 `spring-security-crypto`，只负责已有密码哈希，不启用 Web 鉴权。
+  - `config/SecurityConfig.java`、`web/ApiErrorWriter.java`：逐行注释原代码，保留后续恢复所需的实现。
+  - `config/PasswordConfig.java`：单独创建 BCrypt `PasswordEncoder`，注册的哈希存储继续正常工作。
+  - `application.yaml`：注释预留的 JWT 配置。
+  - 测试：注释原 401 鉴权测试及对应导入；替换为请求能够进入 MVC 的断言，未实现接口返回 404、错误方法返回 405，而不被鉴权拦截。
+- **验证命令与结果**：执行 `mvn.cmd -o clean test`，30 项测试全部通过，0 失败、0 错误、0 跳过。注册入库、BCrypt 校验、冲突处理和错误响应均正常；Spring 上下文可以在不启用安全 starter 的情况下启动。
+- **为什么使用 clean**：注释掉整个 Java 类后，增量编译可能留下旧 `.class`；清理本工程 `target` 后重新编译，避免旧安全类继续影响结果。
+- **验证边界**：使用独立 H2 内存库和 MockMvc；没有连接或修改真实 MySQL，也没有进行浏览器联调。
+- **当前行为**：应用暂不执行 Spring Security 登录、Token 或权限校验；不存在的接口依然返回 404，关闭鉴权不会创建这些接口。
+- **后续建议**：恢复鉴权时同步恢复 starter、配置类和原鉴权测试。`PasswordEncoder` 现已移到 `PasswordConfig`，不要同时恢复旧 `SecurityConfig` 中同名的 Bean，以免重复。独立 crypto 工具与 Web 鉴权是两个不同层次，开发阶段停用后者无需把密码改为明文。
+
+### 2026-10-24：统一 ResultCode 和三字段返回体，精简注册实现
+
+- **需求与范围**：用户要求在 pojo 包实现 `ResultCode(code, msg)` 枚举和泛型 `Result<T>(code, msg, data)`，重构注册、删除冗余代码，并补齐中文注释和 Java 命名规范。本轮是接口契约调整，不将此前遵循旧契约的字段记为编码错误。
+- **问题与影响**：旧返回体包含 message、errorCode、traceId；如果只改 Result 而不改异常处理、前端请求封装与测试，错误提示会丢失或产生编译错误。Controller 与 Service 分别维护两套校验规则，存在不一致风险；停用的安全类、追踪过滤器及注释依赖也增加阅读负担。
+- **解决方法**：
+  1. 新增 `pojo/ResultCode.java`，集中维护项目所需的响应码和中文提示，提供 getter。同一 HTTP 状态可以对应不同提示，但不增加响应字段。
+  2. `pojo/Result.java` 只保留 code、msg、data；通过 success/error 工厂方法构造，data 为 null 时也保留该字段。
+  3. `BusinessException` 携带 ResultCode，全局异常处理复用枚举，并保持 HTTP 状态与 body.code 一致。校验失败返回 400，用户名冲突返回 409，数据库资源故障返回 503，内部错误返回 500。
+  4. 注册 Service 使用 Bean Validation Validator 复用 RegisterRequest 上的约束，删除手写 ValidatorUtils；保留密码哈希、数据库唯一约束冲突处理、事务、UTC 时间和真实主键回填。
+  5. 实现包从 service.Impl 改为符合 Java 包命名习惯的 service.impl，同步修改测试引用；补全 Controller、Service、Mapper、请求和响应对象的中文注释。
+  6. 删除 TraceIdFilter、停用的 ApiErrorWriter/SecurityConfig、注释的 JWT 配置、旧鉴权测试片段以及冗余测试依赖；保留独立密码哈希配置与 Web MVC 测试所需依赖。
+  7. 前端 request.js 从 msg 读取提示，转成 JavaScript Error.message；API 文档和教程中的响应示例同步为三字段。
+- **当前返回示例**：
+
+```json
+{"code":200,"msg":"操作成功","data":{"id":"10001","username":"xiaolin"}}
+```
+
+```json
+{"code":409,"msg":"用户名已存在，请前往登录或更换用户名","data":null}
+```
+
+- **验证**：本轮测试精确检查成功和失败返回体的字段数量及名称，防止旧字段或额外字段混入；同时验证注册流程、并发用户名冲突、非 HTTP 调用校验和前端 msg 错误提示。
+- **最终命令与结果**：后端执行 `mvn.cmd -o clean test`，30 项测试通过，0 失败、0 错误、0 跳过；前端执行 `npm.cmd test`，4 个测试文件共 18 项测试通过；`npm.cmd run build` 构建通过。前端构建仍提示已有大分包警告，此次未调整页面分包。
+- **验证边界**：后端使用 H2 和 MockMvc，前端使用 Vitest；未连接真实 MySQL、未进行浏览器联调。Spring Security Web 鉴权保持未启用。
+- **开发建议**：返回契约变化必须同步生产者、消费者、文档和测试；响应码/默认提示放进枚举，JavaScript 的 Error.message 仍遵循语言自身命名；规则集中维护，删除死代码时先检查引用并做干净编译。
+
+### 2026-10-25：迁移到 Boot 3、Java 17 和 MyBatis-Plus 标准分层
+
+- **需求范围**：按最新要求，将根包改为 org.example.aispingboot，迁移 Java 17 / Boot 3 / MyBatis-Plus；最后一句“只完成注册接口”优先于前面的登录示例，因此只新增注册 Command/Response DTO，不实现用户名或邮箱登录，也不添加登录接口或邮箱字段。
+- **结构调整**：common 放 Result、ResultCode、GlobalExceptionHandler；controller 只依赖 UserService，service.impl 只向下调用 UserMapper；UserMapper 继承 BaseMapper<User>，没有业务判断；entity.User 不直接返回给前端。生产依赖字段统一使用 @Resource。
+- **保留原有行为**：注册路径不变，保留用户名标准化、DTO/Service 共用 Bean Validation、BCrypt 哈希、UTC 时间、事务、主键回填和并发唯一约束冲突处理。原 ValidatorUtils 的通用校验行为并入 Service，避免保留旧包。
+- **依赖与 API 迁移**：Boot 4 的 webmvc/test starter 改为 Boot 3 的 web/starter-test；Jackson 3 的 tools.jackson API 改为 Jackson 2 的 com.fasterxml API；移除原生 MyBatis starter 和 XML，改用 Boot 3 专用的 Plus starter。Lambda 查询使用 User::getUsername，避免字符串列名。
+- **Java 17 兼容**：实际使用本机 Microsoft JDK 17.0.14 编译和运行，编译目标为 release 17。将测试中 Java 21+ 的 ExecutorService 自动关闭写法改为显式 finally 关闭，启动类 class 文件 major version 为 61。
+- **数据库差异**：按新要求将实体映射到带引号的 user 表，提供 sql/01-user-schema.sql；可选的 02-copy-legacy-users.sql 复制旧 ID、用户名、密码哈希等字段。没有自动执行 SQL，也没有删除、更名或写入旧 users 表。旧市场外键未迁移，将来接入商品、订单时需统一处理。
+- **构建环境问题**：首次编译发现本机 Maven 缓存内 4 个 POM 被截断或为空，导致 Plus starter 的传递依赖丢失。已从 Maven Central 重新获取并校验 XML，原损坏文件保留为 .corrupt-20261025 备份；没有修改全局 Maven 仓库配置。
+- **测试中发现并修复**：把 MapperScan 放在启动类上会让 MVC 切片测试也注册数据库 Mapper、导致缺少 SqlSessionFactory。改为 Mapper 接口使用 @Mapper，让数据库自动配置只在适当上下文中扫描；MVC 测试继续隔离 Service。
+- **验证命令与结果**：在 JDK 17 下运行 mvn.cmd test，35 项测试通过、0 失败、0 错误、0 跳过；mvn.cmd -DskipTests package 成功生成 target/aispingboot-0.0.1-SNAPSHOT.jar。测试包含分层依赖、Resource 注入、DTO 返回、真实 Plus 查询/插入、参数边界及并发冲突。
+- **真实 HTTP 验证**：用 JDK 17 启动实际 Tomcat 服务，仅绑定本机回环地址并使用独立 H2 测试库；验证注册 200、大小写重复 409、参数错误 400、登录未实现 404，响应均只有 code、msg、data。验证后已停止该临时服务。
+- **验证边界**：未连接真实 MySQL，建表/旧数据复制脚本未执行，未做浏览器联调；H2 结果不能替代 MySQL 排序规则和现有表结构核对。前端请求路径和返回契约没有改变，本轮未修改前端业务代码。
+- **完整交付**：项目 README 提供完整目录、启动和数据库处理步骤；docs/refactor-complete-source.md 根据当前文件生成，逐个收录全部生产代码、测试、配置及 SQL，无省略代码。
+- **后续建议**：跨大版本迁移必须同时调整 starter、序列化包、校验注解、测试 API 和 JDK 语法；编译目标与实际测试运行 JDK 都要验证；更改表名应提供显式迁移，不能把实体注解变化当作数据库已升级。框架切片测试要与数据库扫描配置隔离。
+
+### 2026-10-25：Apifox 注册返回 500 的只读排查
+
+- **现象**：用户发送合法的用户名和密码 JSON，收到三字段 500 响应。当前项目已被用户改为 com.zhf.mall 包，本轮按实际代码排查，没有改回旧包名，也没有恢复用户已删除的后端 AGENTS.md。
+- **已确认的根因**：IDE 运行日志记录 org.springframework.transaction.CannotCreateTransactionException；使用当前配置做只读 JDBC 连接测试，返回 SQL_STATE=28000、DATABASE_ERROR_CODE=1045。MySQL 拒绝账号认证，事务在进入注册查询/写入前就无法建立。这不是 JSON 格式错误。
+- **为什么前端只显示 500**：当前全局异常处理器将无法创建事务的异常交给通用处理分支，返回“服务内部错误”，日志也只保留异常类型，因此前端响应看不到底层认证原因。该响应本身不能定位到具体密码或授权问题。
+- **处理步骤**：在实际启动应用的 IDEA Run Configuration 中确认 DB_USERNAME 为实际可用账号、DB_PASSWORD 为该账号的正确密码，或检查本机数据源配置；同时核对账号对 localhost 和开发库的授权。修改环境变量后重启应用，不能只在另一个终端设置变量。不要把真实密码发送到聊天或写入文档。
+- **接口路径核对**：对运行中应用发送空 JSON（不会注册或写入数据），POST /register 返回 404，POST /api/auth/register 返回参数校验 400。Apifox 应使用完整地址 http://localhost:8080/api/auth/register；相对路径是否正确还取决于环境中的基础 URL。
+- **后续表结构检查**：实体映射到 user，IDE 缓存的 shiguang_market_dev 结构中仅看到旧 users。数据库认证恢复后，再确认实际 user 表是否已建立；缓存可能过期，此项尚未通过真实数据库查询验证，不能将它当作本次 1045 的原因。
+- **本轮改动与验证边界**：未修改生产 Java 代码、未变更账号密码或数据库授权、未执行建表或注册写入；仅做路由校验、IDE 日志读取及只读数据库连接诊断。实际注册是否成功，需修正数据库凭据/授权后重新验证。
+- **开发建议**：启动成功不代表已建立数据库连接；遇到通用 500 应先看日志的异常链。先恢复认证，再检查表结构，最后测试业务写入，不要把网络/认证/SQL/校验问题混为一类。若改进日志，只记录必要的异常类别、SQLState 和数据库错误码，避免输出凭据和请求密码。
+
+### 2026-10-25：数据库配置调整后的真实 MySQL 注册验收
+
+- **此前症状与本轮目标**：历史注册 500 已诊断为 MySQL 1045 / SQLState 28000；用户随后调整默认账号并重启，本轮先验证运行中应用的实际连接，再验收注册，不将旧故障当作当前故障。
+- **当前证据**：通过 JDK 17 附加诊断读取 8080 应用自身的 Spring DataSource，以只读连接执行元数据查询。连接成功，产品 MySQL 9.6.0，库 shiguang_market_dev，端口 3306，认证账号 root@localhost。当前连接未复现认证失败；没有修改账号、密码或授权，也不据此推断历史密码一定错误。
+- **表结构**：user 与旧 users 均存在；user 的 7 个实体字段、自增 BIGINT 主键、uk_user_username 唯一索引及两个 CHECK 约束存在；InnoDB，用户名排序规则 utf8mb4_0900_ai_ci。未执行建表、数据复制或旧 users 写入。
+- **验证方法与实际结果**：对 http://localhost:8080/api/auth/register 发起 24 个真实 HTTP 场景，全部通过。2 个成功场景返回 200；相同、大小写及 trim 后重复返回 409；缺字段/null、用户名格式及长度、密码长度/空白/UTF-8 超限、非字符串字段、畸形 JSON、空请求体返回 400；不支持的 Content-Type 返回 415、方法返回 405、错误路径返回 404。所有响应严格包含 code、msg、data，code 与 HTTP 状态一致，错误 data 为 null；成功仅公开字符串 id 和 username。
+- **持久化复核**：只读查询两个验收账号，ID 与响应一致且不同；昵称为标准化用户名，头像为空；BCrypt 格式及 matches 校验通过；重复请求未替换原密码；72 字节密码含首尾空格，原值匹配而 trim 后不匹配；created_at 与 updated_at 相同且与请求窗口内的 UTC 时间一致。验收前该测试前缀为 0 行，验收后为 2 行。
+- **测试数据**：保留 acc_261025_174335_1ba3_a（ID 2）和 acc_261025_174335_1ba3_b（ID 3），未删除已有数据。测试密码仅在诊断程序内存生成/使用，不记录密码或哈希。
+- **修改范围**：未修改业务 Java、数据源配置或数据库结构；修正文档开头过期包名和后端 AGENTS.md 状态，补充验收报告及交接最新状态。完整证据摘要见 [真实 MySQL 注册验收报告](registration-acceptance-2026-10-25.md)。
+- **验证边界**：本轮是运行中 JDK 17 应用的真实 HTTP + MySQL 验收；没有重新执行 Maven/H2 35 项测试，没有浏览器/Apifox 操作，没有复测并发竞争、数据库断连或故障分类；这些结果不能由顺序重复注册推断。没有实现登录或 JWT。
+- **后续建议**：延续上条经验，按“运行中应用连接 → 实时表结构 → 真实 HTTP → 持久化复核”定位和验收。终端中的同名环境变量不等于 IDE 进程实际配置；账号调整后应先复验，不必重复修改凭据或重建表。UTC 验收应比较数据库 DATETIME 与请求时的 UTC，而不是仅依赖会话 time_zone；本次会话/全局 time_zone 均为 SYSTEM。
+
+### 2026-10-25：按 Taste / Impeccable 重构前端并修正交互边界
+
+- **目标与症状**：用户安装并要求应用两套设计技能，明确选择“商品、搜索和分类优先”。原首页桌面/手机首屏被导航、分类和宣传占据；全局 CSS 反复高优先级覆盖，桌面左右留白不同；按列重新分组的商品 DOM 在不同宽度下阅读顺序不同。账号页还保留“登录或注册尚未开放”的过期提示。
+- **根因**：样式与状态规则分散、后续仅追加覆盖，宣传优先的版式不符合本轮任务；JS 按列分组改变源顺序；前端用户名在表单校验之后才 trim，导致后端允许的首尾空格在前端先被拒绝，密码 required 未拒绝纯空白。
+- **解决方法**：保留 Vue/Element Plus、接口和路由，统一颜色/字号/边距令牌；首页缩短宣传，把商品提前，分类改为响应式菜单；CSS Grid 直接按源顺序渲染；快捷工具不覆盖商品；同步账号、详情、发布和订单视觉。用户名先 trim 再校验，纯空白密码先阻止，密码值不 trim，规则关联 aria-describedby；注册成功及帮助准确说明登录尚未开放。
+- **本轮发现并修复的交互问题**：分类悬停打开后再点击会反向关闭；鼠标移出事件还可能干扰触摸菜单。统一点击打开，只有具备精确悬停指针才响应 mouseleave 关闭，保留 Esc 关闭和焦点恢复。浏览器检查据此覆盖真实鼠标/触摸操作，未把检测脚本第一次失败写成通过。
+- **实际验证**：npm.cmd test 为 4 文件 18 项通过；npm.cmd run build 成功。Taste 生产源码 lint 29 个文件为 0 FAIL、2 浮层阴影 WARN；生产页面 1440/768/390px inspect 为 0 FAIL、1 手机辅助字号 WARN。Chromium 生产预览 80 个断言通过、0 失败，包含搜索/筛选/排序/撤销、菜单键盘/触摸、详情返回、注册校验和成功/重复分支、草稿保存恢复/清除撤销、订单页签、帮助和反馈等。
+- **测量结果**：首件商品/首件价格在桌面 1440×900 为 582/869px，手机 390×844 为 407/614px；外边距分别 80/80px、16/16px。保留实际截图与测量，不把静态检查等同于视觉质量。
+- **工具与验证边界**：两个 skill 文件均已安装；Impeccable 的 context/concept-seed 无法下载引擎 0.1.17，未生成它的方向卡或 detector 通过结果，本轮直接应用文档及独立审查。注册浏览器测试拦截为 200/409 响应，未写 MySQL；受保护页面用隔离浏览器的本机 UI 会话检查，未实现或验证登录、交易、上传或正式发布。已有 Element Plus 主包体积警告仍在；手机副行 12px 的提示未隐藏。
+- **后续建议**：布局按最常见任务决定首屏；CSS 常量集中维护，避免不断叠加 body 选择器；网格保持源顺序；鼠标 hover 与触摸分开处理；前后端输入标准化应发生在同一校验阶段；网络拦截 UI 验证、真实 HTTP 数据库验收及真实登录授权必须分开记录。完整记录见 [前端重构报告](../../../shop/docs/frontend-redesign-2026-10-25.md)。
+- **独立复核与规范**：finish-reviewer 查看 19 张截图并复核源码/断言，结论 ship，无 material fixes；另由 documenter 从实际代码提取 DESIGN.md 和 schemaVersion 2 的 .impeccable/design.json。审查只适用于本轮前端和所列证据，未扩展为后端授权或全部工具通过。
+
+## 参考资料
+
+- [MyBatis：Mapper XML、参数绑定与主键回填](https://mybatis.org/mybatis-3/sqlmap-xml.html)
+- [Spring MVC：RequestBody 与 Bean Validation](https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-controller/ann-methods/requestbody.html)
+- [Spring Security：Java 配置](https://docs.spring.io/spring-security/reference/servlet/configuration/java.html)
+- [Spring Boot：应用测试](https://docs.spring.io/spring-boot/reference/testing/spring-boot-applications.html)
+- [Spring Boot 3.5：系统要求](https://docs.spring.io/spring-boot/3.5/system-requirements.html)
+- [MyBatis-Plus：Boot 3 安装集成](https://baomidou.com/getting-started/install/)

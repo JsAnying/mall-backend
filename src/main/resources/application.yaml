@@ -19,3 +19,18 @@ mybatis-plus:
     default-statement-timeout: 30
   global-config:
     banner: false
+
+jwt:
+  # 签名密钥：HS256 算法要求至少 256 位（32 个字符）
+  secret: "your-256-bit-secret-key-change-in-production-min-32-chars"
+  # 访问令牌有效期（毫秒），例如 2 小时
+  expiration: 7200000
+  # 刷新令牌有效期（毫秒），例如 7 天
+  refresh-expiration: 604800000
+  # 签发者标识（对应 JWT 的 iss 声明）
+  issuer: "mall"
+  # 令牌前缀
+  token-prefix: "Bearer "
+  # 头字符串
+  header-string: "Authorization"
+

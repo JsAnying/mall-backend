@@ -91,6 +91,7 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
                 .body(Result.error(ResultCode.INTERNAL_ERROR));
     }
 
+
     private ResponseEntity<Object> buildResponse(int code, String msg, HttpHeaders headers) {
         return new ResponseEntity<>(Result.error(code, msg), headers, HttpStatusCode.valueOf(code));
     }

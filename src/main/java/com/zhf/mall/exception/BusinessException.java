@@ -9,6 +9,7 @@ import lombok.Getter;
 @Getter
 public class BusinessException extends RuntimeException {
 
+
     private static final long serialVersionUID = 1L;
 
     /** 业务错误对应的响应码与默认提示。 */

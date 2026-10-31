@@ -9,6 +9,7 @@ import com.zhf.mall.mapper.UserMapper;
 import com.zhf.mall.dto.command.UserRegisterCommandDTO;
 import com.zhf.mall.entity.User;
 import com.zhf.mall.service.impl.UserServiceImpl;
+import com.zhf.mall.util.ValidationUtil;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.junit.jupiter.api.BeforeEach;
@@ -46,7 +47,7 @@ class UserServiceTests {
         service = new UserServiceImpl();
         ReflectionTestUtils.setField(service, "userMapper", mapper);
         ReflectionTestUtils.setField(service, "passwordEncoder", encoder);
-        ReflectionTestUtils.setField(service, "validator", validatorFactory.getValidator());
+        ReflectionTestUtils.setField(service, "validationUtil", new ValidationUtil(validatorFactory.getValidator()));
     }
 
     @Test

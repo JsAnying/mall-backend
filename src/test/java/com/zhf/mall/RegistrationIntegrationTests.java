@@ -12,6 +12,7 @@ import com.zhf.mall.common.ResultCode;
 import jakarta.validation.Validator;
 import com.zhf.mall.exception.BusinessException;
 import com.zhf.mall.service.impl.UserServiceImpl;
+import com.zhf.mall.util.ValidationUtil;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -118,7 +119,7 @@ class RegistrationIntegrationTests {
         UserServiceImpl racingService = new UserServiceImpl();
         ReflectionTestUtils.setField(racingService, "userMapper", racingMapper);
         ReflectionTestUtils.setField(racingService, "passwordEncoder", encoder);
-        ReflectionTestUtils.setField(racingService, "validator", validator);
+        ReflectionTestUtils.setField(racingService, "validationUtil", new ValidationUtil(validator));
         java.util.concurrent.Callable<Integer> register = () -> {
             try {
                 racingService.register(new UserRegisterCommandDTO("racing_user", "example123"));

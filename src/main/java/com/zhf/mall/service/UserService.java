@@ -23,4 +23,12 @@ public interface UserService {
      * @return 登录用户的公开资料
      */
     UserLoginResponseDTO login(@Valid UserRegisterCommandDTO command);
+
+    /**
+     * 用户登出。
+     *
+     * @param tokenId 已验证的令牌编号
+     * @param expiresAt 令牌过期时间
+     */
+    void logout(String tokenId, java.util.Date expiresAt);
 }

@@ -268,6 +268,22 @@ Content-Type: application/json
 - **后续建议**：布局按最常见任务决定首屏；CSS 常量集中维护，避免不断叠加 body 选择器；网格保持源顺序；鼠标 hover 与触摸分开处理；前后端输入标准化应发生在同一校验阶段；网络拦截 UI 验证、真实 HTTP 数据库验收及真实登录授权必须分开记录。完整记录见 [前端重构报告](../../../shop/docs/frontend-redesign-2026-10-25.md)。
 - **独立复核与规范**：finish-reviewer 查看 19 张截图并复核源码/断言，结论 ship，无 material fixes；另由 documenter 从实际代码提取 DESIGN.md 和 schemaVersion 2 的 .impeccable/design.json。审查只适用于本轮前端和所列证据，未扩展为后端授权或全部工具通过。
 
+### 2026-10-31：个人中心返回 503
+
+- **症状**：登录后进入个人中心，`GET /api/users/me` 返回 503。
+- **根因**：开发库存在 `user` 表，但缺少 JWT 过滤器查询的 `revoked_token` 表；同时头像表 `user_avatar` 也尚未创建。
+- **解决办法**：在 `shiguang_market_dev` 执行项目中的 `03-revoked-token.sql` 和 `04-user-avatar.sql`，两者均使用 `CREATE TABLE IF NOT EXISTS`。没有修改已有用户记录或后端源码。
+- **实际验证**：建表前通过 MySQL 信息架构检查到仅有 `user`；两份脚本执行成功。随后通过前端代理，以临时签发的短期测试令牌请求 `GET /api/users/me`，实际返回 HTTP 200、业务码 200，资料包含 id、username、nickname 和 avatarUrl。未读取或记录浏览器 Token，未验证头像上传或浏览器现有会话。
+- **后续建议**：新增依赖数据库表的功能时，先确认当前运行环境已经执行对应建表脚本；服务端可记录不含敏感信息的数据库异常类型，避免所有查询错误都只呈现笼统的 503。
+
+### 2026-10-31：清理重复的单数分类表
+
+- **症状**：数据库同时出现单数和复数两套分类表。
+- **根因**：生成新分类脚本前没有充分核对旧市场建表脚本，新增了与既有复数表用途重叠的三张表。
+- **解决办法**：按用户要求，在 `shiguang_market_dev` 依次删除新建的 `category_type`、`category_group` 和 `category`。删除前确认它们只有相互之间的外键依赖，分别包含 74、24 和 8 条初始化记录。
+- **验证**：删除后检查信息架构，三张单数表已不存在，`categories`、`category_groups`、`category_types` 仍存在。未更改复数表数据；未验证分类接口。
+- **后续建议**：新建业务表前同时检查实际数据库和历史脚本，并核对外键依赖；现有复数表结构是后续开发的参考，使用前仍需结合当前业务确认。
+
 ## 参考资料
 
 - [MyBatis：Mapper XML、参数绑定与主键回填](https://mybatis.org/mybatis-3/sqlmap-xml.html)

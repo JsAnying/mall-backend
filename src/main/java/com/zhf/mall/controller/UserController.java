@@ -11,6 +11,8 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.security.core.Authentication;
+import io.jsonwebtoken.Claims;
 
 /** 用户接口，只负责接收请求、调用业务层及包装返回结果。 */
 @RestController
@@ -39,5 +41,17 @@ public class UserController {
     @PostMapping("/login")
     public Result<UserLoginResponseDTO> login(@Valid @RequestBody UserRegisterCommandDTO command) {
         return Result.success(userService.login(command));
+    }
+
+    /**
+     * 用户登出。
+     *
+     * @return 无业务数据的成功响应
+     */
+    @PostMapping("/logout")
+    public Result<Void> logout(Authentication authentication) {
+        Claims claims = (Claims) authentication.getDetails();
+        userService.logout(claims.getId(), claims.getExpiration());
+        return Result.success();
     }
 }

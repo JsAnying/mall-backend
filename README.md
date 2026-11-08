@@ -50,9 +50,7 @@ mvn.cmd clean test
 1. 确认开发库 `shiguang_market_dev` 已存在。如果使用其他库，同步调整 SQL 的 USE 和环境变量 DB_URL。
 2. 在数据库客户端手动执行 [01-user-schema.sql](sql/01-user-schema.sql)，仅创建新 user 表。若已有同名表，先核对结构；IF NOT EXISTS 不是自动升级工具。
 3. 若要沿用旧注册账号，确认新 user 表为空，再手动执行 [02-copy-legacy-users.sql](sql/02-copy-legacy-users.sql)。ID 和 BCrypt 哈希会原样复制；旧 users 表保持不变。该可选脚本不要重复执行。
-4. 旧市场 15 表脚本仍作为后续业务参考保存。当前只重构注册，将来对接商品、订单时需要另行统一用户外键，不能假定它们已迁移。
-
-本轮不会自动执行这两个脚本，也没有连接真实 MySQL。
+4. `shiguang_market_dev` 已于 2026-11-08 使用 [07-migrate-legacy-users.sql](sql/07-migrate-legacy-users.sql) 把商品、订单等 6 张表的 7 条账号外键统一到 `user.id`，并删除空的旧 `users` 表。该迁移只适用于仍有旧结构且旧账号表为空的开发库。旧表有记录时，需先核对账号和引用的 ID，再执行相应的数据迁移。
 
 ## 启动应用
 

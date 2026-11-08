@@ -28,7 +28,7 @@ public class UserRegisterCommandDTO {
     @NotBlank(message = "密码不能为空")
     @Size(min = 6, max = 64, message = "密码长度必须在 6 到 64 位之间")
     @ToString.Exclude
-    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY) // 密码不会出现在 JSON 输出中
     private String password;
 
     /** 显式指定 JSON 构造入口，保证标准化发生在 Bean Validation 校验之前。 */

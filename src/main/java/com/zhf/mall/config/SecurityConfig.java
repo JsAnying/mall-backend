@@ -37,6 +37,7 @@ public class SecurityConfig {
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers(HttpMethod.GET, "/api/home/recommendations").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/media/avatars/*").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/goods", "/api/goods/{id}").permitAll()
                         .requestMatchers(PUBLIC_URLS).permitAll() // 公共请求
                         .anyRequest().authenticated() // 其他请求需要认证
                 )

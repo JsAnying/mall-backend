@@ -28,8 +28,8 @@ public class User {
     private String username;
 
     // 只保存 BCrypt 哈希，不接收或返回 JSON，也不参与 toString 输出。
-    @JsonIgnore
-    @ToString.Exclude
+    @JsonIgnore // 不接收或返回 JSON
+    @ToString.Exclude // 不参与 toString 输出
     private String passwordHash;
 
     /** 对外展示的昵称，注册时默认使用用户名。 */

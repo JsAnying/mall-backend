@@ -19,7 +19,7 @@ import org.springframework.http.HttpMethod;
 @EnableMethodSecurity
 public class SecurityConfig {
     public static final String[] PUBLIC_URLS = {
-            "/api/auth/register", "/api/auth/login"
+            "/api/auth/register", "/api/auth/login","/api/categories"
     };
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http, JdbcTemplate jdbc, ObjectMapper json) throws Exception {
@@ -35,6 +35,7 @@ public class SecurityConfig {
                 }))
                 //配置请求授权
                 .authorizeHttpRequests(authorize -> authorize
+                        .requestMatchers(HttpMethod.GET, "/api/home/recommendations").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/media/avatars/*").permitAll()
                         .requestMatchers(PUBLIC_URLS).permitAll() // 公共请求
                         .anyRequest().authenticated() // 其他请求需要认证
